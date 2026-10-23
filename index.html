@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Limit">
+<meta name="theme-color" content="#24282c">
+<title>Limit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --asphalt:#24282c;
+  --line:#ece9df;
+  --muted:#9aa1a8;
+  --sign-red:#d42a2f;
+  --amber:#f2b134;
+  --over:#b5161d;
+  --bg:var(--asphalt);
+  --fg:var(--line);
+  --sign:min(52vw, 32vh, 230px);
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--fg);
+  font-family:"Overpass","Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  transition:background-color .25s ease;
+  padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0);
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+  overflow:hidden;
+}
+body.near{--bg:#4a3a17}
+body.over{--bg:var(--over)}
+.app{height:100%;display:flex;flex-direction:column;max-width:520px;margin:0 auto;padding:14px 20px 18px}
+.road{font-size:1.1rem;font-weight:700;min-height:1.6em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3.5vh}
+.sign{
+  width:var(--sign);height:var(--sign);border-radius:50%;
+  background:#fff;border:calc(var(--sign) * .11) solid var(--sign-red);
+  display:grid;place-items:center;color:#111;
+  font-weight:900;font-size:calc(var(--sign) * .40);line-height:1;padding-top:.1em;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em;
+  box-shadow:0 0 0 3px rgba(255,255,255,.9);
+}
+.sign.unknown{color:#9ba0a5;font-size:calc(var(--sign) * .32)}
+.speed{text-align:center}
+.speed .n{display:block;font-size:min(34vw, 20vh, 170px);font-weight:800;line-height:.9;font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.speed .u{font-size:1.1rem;color:var(--muted);font-weight:600}
+.status{text-align:center;color:var(--muted);font-size:.95rem;min-height:2.6em;line-height:1.3;padding:0 8px}
+body.over .speed .u, body.over .status, body.near .speed .u, body.near .status{color:#f4e6d6}
+.controls{display:flex;gap:10px}
+button{
+  font:inherit;font-weight:700;border:0;border-radius:14px;
+  padding:16px 12px;font-size:1.05rem;color:var(--fg);background:rgba(255,255,255,.09);
+  cursor:pointer;
+}
+button.primary{flex:1;background:var(--line);color:var(--asphalt);font-size:1.15rem}
+button.primary.running{background:rgba(255,255,255,.16);color:var(--fg)}
+button:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+.settings{display:flex;gap:10px;margin-top:10px}
+.settings button{flex:1;font-size:.9rem;padding:11px 6px;font-weight:600}
+.credit{margin-top:10px;font-size:.72rem;color:var(--muted);text-align:center;line-height:1.35}
+body.over .credit, body.near .credit{color:#f4e6d6}
+.credit a{color:inherit}
+@media (prefers-reduced-motion:reduce){body{transition:none}}
+</style>
+</head>
+<body>
+<main class="app">
+  <div class="road" id="road" aria-live="polite"></div>
+
+  <div class="stage">
+    <div class="sign unknown" id="sign" role="img" aria-label="Speed limit unknown">–</div>
+    <div class="speed">
+      <span class="n" id="speedN" aria-live="off">–</span>
+      <span class="u" id="speedU">km/h</span>
+    </div>
+    <p class="status" id="status" aria-live="polite">Mount your phone, then tap Start. Keep this screen open while driving.</p>
+  </div>
+
+  <div class="controls">
+    <button class="primary" id="start">Start</button>
+  </div>
+  <div class="settings">
+    <button id="units" aria-label="Change units">km/h</button>
+    <button id="tol" aria-label="Change alert margin">Alert +3</button>
+    <button id="chime" aria-label="Toggle alert sound">Sound on</button>
+  </div>
+  <p class="credit">Limits from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>. Map data can be missing or out of date, so road signs always take priority.</p>
+</main>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const els = {
+    road: $('#road'), sign: $('#sign'), speed: $('#speedN'), unit: $('#speedU'),
+    status: $('#status'), start: $('#start'), units: $('#units'), tol: $('#tol'), chime: $('#chime')
+  };
+
+  // ---------- preferences ----------
+  const DEFAULTS = { mph: false, tol: 3, chime: true };
+  let prefs = { ...DEFAULTS };
+  try { prefs = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('limit-prefs') || '{}') }; } catch (e) {}
+  const savePrefs = () => { try { localStorage.setItem('limit-prefs', JSON.stringify(prefs)); } catch (e) {} };
+
+  // ---------- state ----------
+  let watchId = null, wakeLock = null, audioCtx = null;
+  let ways = [], fetchCenter = null, fetching = false, retryAfter = 0, lookupError = false;
+  let lastFix = null, speedMs = null, heading = null, accuracy = null;
+  let match = null, lastMatchAt = 0, stickyId = null;
+  let wasOver = false;
+
+  // ---------- geometry helpers ----------
+  const R = 6371000, rad = d => d * Math.PI / 180;
+  function dist(a, b) {
+    const dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+    const h = Math.sin(dLat/2)**2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  function bearing(a, b) {
+    const y = Math.sin(rad(b.lon - a.lon)) * Math.cos(rad(b.lat));
+    const x = Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) - Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(rad(b.lon - a.lon));
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+  const angDiff = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+
+  // ---------- OpenStreetMap lookup ----------
+  // Main instance first, VK Maps mirror (worldwide, near-live) as backup.
+  const ENDPOINTS = ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
+  // Driveways and car-park aisles ("service") are left out: they are numerous and rarely carry limits.
+  const HW = 'motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link';
+  // One lookup covers a 1.5 km circle centred ahead of you, and is renewed only after ~900 m,
+  // which keeps expressway driving under the public server's ~2 queries/minute allowance.
+  const RADIUS = 1500, REFETCH_AT = 900, LOOKAHEAD = 600, KEEP_WITHIN = 4000;
+  const wayCache = new Map();
+  let backoff = 15000;
+
+  function project(p, brg, metres) {
+    const d = metres / R, b = rad(brg), la = rad(p.lat), lo = rad(p.lon);
+    const la2 = Math.asin(Math.sin(la) * Math.cos(d) + Math.cos(la) * Math.sin(d) * Math.cos(b));
+    const lo2 = lo + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la), Math.cos(d) - Math.sin(la) * Math.sin(la2));
+    return { lat: la2 * 180 / Math.PI, lon: lo2 * 180 / Math.PI };
+  }
+
+  async function fetchWays(lat, lon) {
+    const q = `[out:json][timeout:25];way(around:${RADIUS},${lat.toFixed(6)},${lon.toFixed(6)})[highway~"^(${HW})$"];out tags geom;`;
+    let waitHint = 0;
+    for (const ep of ENDPOINTS) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25000);
+      try {
+        const r = await fetch(ep, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'data=' + encodeURIComponent(q),
+          signal: ctrl.signal
+        });
+        if (r.status === 429 || r.status === 504) {
+          const ra = parseInt(r.headers.get('Retry-After') || '0', 10);
+          if (ra) waitHint = Math.max(waitHint, ra * 1000);
+          throw new Error('busy');
+        }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        // A timed-out or refused query can still come back as HTTP 200 with a "remark" and no data.
+        if (j.remark && (!j.elements || !j.elements.length)) throw new Error('remark');
+        return j.elements.filter(e => e.type === 'way' && e.geometry && e.geometry.length > 1)
+          .map(e => ({ id: e.id, tags: e.tags || {}, geom: e.geometry }));
+      } catch (e) { /* try next endpoint */ }
+      finally { clearTimeout(timer); }
+    }
+    const err = new Error('lookup failed'); err.waitHint = waitHint; throw err;
+  }
+
+  function pruneCache(pos) {
+    for (const [id, w] of wayCache) {
+      const g = w.geom, mid = g[Math.floor(g.length / 2)];
+      if (dist(pos, mid) > KEEP_WITHIN && dist(pos, g[0]) > KEEP_WITHIN) wayCache.delete(id);
+    }
+    ways = [...wayCache.values()];
+  }
+
+  async function ensureWays(pos) {
+    if (fetching || Date.now() < retryAfter) return;
+    const moving = heading != null && speedMs != null && speedMs > 5;
+    const target = moving ? project(pos, heading, LOOKAHEAD) : pos;
+    if (fetchCenter && dist(fetchCenter, pos) < REFETCH_AT) return;
+    fetching = true;
+    if (!ways.length) render();
+    try {
+      const fresh = await fetchWays(target.lat, target.lon);
+      fresh.forEach(w => wayCache.set(w.id, w));
+      pruneCache(pos);
+      fetchCenter = target;
+      lookupError = false;
+      backoff = 15000;
+      if (lastFix) updateMatch();
+    } catch (e) {
+      lookupError = true;
+      retryAfter = Date.now() + Math.max(backoff, e.waitHint || 0);
+      backoff = Math.min(backoff * 2, 120000);
+    } finally {
+      fetching = false;
+      render();
+    }
+  }
+
+  // ---------- speed limit parsing ----------
+  function parseLimit(v) {
+    if (!v) return null;
+    v = String(v).split(';')[0].trim().toLowerCase();
+    const m = v.match(/^(\d+(?:\.\d+)?)\s*(mph|km\/h|kmh|kph)?$/);
+    if (!m) return null; // "none", "signals", zone codes etc.
+    return { value: parseFloat(m[1]), unit: m[2] === 'mph' ? 'mph' : 'kmh' };
+  }
+  function limitFor(m) {
+    if (!m) return null;
+    const t = m.w.tags;
+    let raw = t.maxspeed;
+    if (!raw) {
+      let fwd = m.fwd;
+      if (t.oneway === '-1') fwd = !fwd;
+      raw = fwd ? t['maxspeed:forward'] : t['maxspeed:backward'];
+    }
+    return parseLimit(raw);
+  }
+  function limitDisplay(lim) {
+    if (!lim) return null;
+    if (prefs.mph) return lim.unit === 'mph' ? lim.value : Math.round(lim.value / 1.609344 / 5) * 5;
+    return lim.unit === 'kmh' ? lim.value : Math.round(lim.value * 1.609344);
+  }
+  function roadName(m) {
+    if (!m) return '';
+    const t = m.w.tags;
+    if (t.name && t.ref) return `${t.name} (${t.ref})`;
+    return t.name || t.ref || '';
+  }
+
+  // ---------- road matching ----------
+  function updateMatch() {
+    const p = lastFix;
+    const kx = Math.cos(rad(p.lat)) * 111320, ky = 110540;
+    const useHeading = heading != null && speedMs != null && speedMs > 3;
+    let best = null;
+    for (const w of ways) {
+      const g = w.geom;
+      for (let i = 0; i < g.length - 1; i++) {
+        const ax = (g[i].lon - p.lon) * kx, ay = (g[i].lat - p.lat) * ky;
+        const bx = (g[i+1].lon - p.lon) * kx, by = (g[i+1].lat - p.lat) * ky;
+        const dx = bx - ax, dy = by - ay, len2 = dx*dx + dy*dy || 1e-9;
+        const t = Math.max(0, Math.min(1, -(ax*dx + ay*dy) / len2));
+        const d = Math.hypot(ax + t*dx, ay + t*dy);
+        if (d > 40) continue;
+        const segB = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+        let score = d, fwd = true;
+        if (useHeading) {
+          const diff = angDiff(heading, segB);
+          score += 25 * (1 - Math.abs(Math.cos(rad(diff))));
+          fwd = diff <= 90;
+        }
+        if (w.id === stickyId) score -= 6; // keeps the display steady near junctions
+        if (!best || score < best.score) best = { w, score, d, fwd };
+      }
+    }
+    if (best) {
+      match = best; stickyId = best.w.id; lastMatchAt = Date.now();
+    } else if (Date.now() - lastMatchAt > 5000) {
+      match = null; stickyId = null;
+    }
+  }
+
+  // ---------- GPS ----------
+  function onFix(p) {
+    const c = p.coords;
+    const pos = { lat: c.latitude, lon: c.longitude, t: p.timestamp };
+    accuracy = c.accuracy;
+
+    let v = (c.speed != null && c.speed >= 0 && !Number.isNaN(c.speed)) ? c.speed : null;
+    if (v == null && lastFix) {
+      const dt = (pos.t - lastFix.t) / 1000;
+      if (dt > 0.5) v = dist(lastFix, pos) / dt;
+    }
+    if (v != null) speedMs = speedMs == null ? v : speedMs * 0.35 + v * 0.65;
+
+    if (c.heading != null && c.heading >= 0 && !Number.isNaN(c.heading)) heading = c.heading;
+    else if (lastFix && dist(lastFix, pos) > 5) heading = bearing(lastFix, pos);
+
+    lastFix = pos;
+    if (ways.length) updateMatch();
+    ensureWays(pos);
+    render();
+  }
+
+  function onGpsError(err) {
+    if (err.code === 1) {
+      stop();
+      setStatus('Location access is off. Turn it on in Settings › Privacy & Security › Location Services › Safari Websites, then reload.');
+    } else {
+      setStatus('Waiting for a GPS signal…');
+    }
+  }
+
+  // ---------- rendering ----------
+  function setStatus(s) { els.status.textContent = s; }
+
+  function render() {
+    const factor = prefs.mph ? 2.236936 : 3.6;
+    const unit = prefs.mph ? 'mph' : 'km/h';
+    els.unit.textContent = unit;
+    els.units.textContent = unit;
+    els.tol.textContent = prefs.tol ? `Alert +${prefs.tol}` : 'Alert at limit';
+    els.chime.textContent = prefs.chime ? 'Sound on' : 'Sound off';
+
+    if (watchId == null) return;
+
+    const cur = speedMs == null ? null : Math.round(speedMs * factor);
+    els.speed.textContent = cur == null ? '–' : cur;
+
+    const lim = limitDisplay(limitFor(match));
+    if (lim != null) {
+      els.sign.textContent = lim;
+      els.sign.classList.remove('unknown');
+      els.sign.setAttribute('aria-label', `Speed limit ${lim} ${unit}`);
+    } else {
+      els.sign.textContent = '?';
+      els.sign.classList.add('unknown');
+      els.sign.setAttribute('aria-label', 'Speed limit unknown');
+    }
+    els.road.textContent = roadName(match);
+
+    const over = cur != null && lim != null && cur > lim + prefs.tol;
+    const near = !over && cur != null && lim != null && cur > lim;
+    document.body.classList.toggle('over', over);
+    document.body.classList.toggle('near', near);
+    if (over && !wasOver) chime();
+    wasOver = over;
+
+    // status line
+    if (!lastFix) setStatus('Waiting for a GPS signal…');
+    else if (accuracy > 50) setStatus(`GPS signal is weak (±${Math.round(accuracy)} m), so the road match may be wrong.`);
+    else if (lookupError && !match) setStatus(`The map data server is busy. Retrying in ${Math.max(1, Math.ceil((retryAfter - Date.now()) / 1000))} s…`);
+    else if (fetching && !match) setStatus('Looking up the speed limit…');
+    else if (!match) setStatus('No road found at your position.');
+    else if (lim == null) setStatus('This road has no speed limit in the map data.');
+    else if (over) setStatus(`${cur - lim} ${unit} over the limit`);
+    else setStatus('');
+  }
+
+  // ---------- sound ----------
+  function chime() {
+    if (!prefs.chime || !audioCtx) return;
+    const t0 = audioCtx.currentTime;
+    [0, 0.22].forEach(off => {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, t0 + off);
+      g.gain.exponentialRampToValueAtTime(0.4, t0 + off + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + off + 0.18);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t0 + off); o.stop(t0 + off + 0.2);
+    });
+  }
+
+  // ---------- screen wake lock ----------
+  async function lockScreen() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && watchId != null) lockScreen();
+  });
+
+  // ---------- start / stop ----------
+  function start() {
+    if (!('geolocation' in navigator)) { setStatus('This browser can’t read your location.'); return; }
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx.resume();
+    } catch (e) {}
+    watchId = navigator.geolocation.watchPosition(onFix, onGpsError, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+    lockScreen();
+    els.start.textContent = 'Stop';
+    els.start.classList.add('running');
+    setStatus('Waiting for a GPS signal…');
+  }
+
+  function stop() {
+    if (watchId != null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    try { wakeLock && wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+    lastFix = null; speedMs = null; heading = null; match = null; stickyId = null; wasOver = false;
+    document.body.classList.remove('over', 'near');
+    els.start.textContent = 'Start';
+    els.start.classList.remove('running');
+    els.speed.textContent = '–';
+    els.sign.textContent = '–';
+    els.sign.classList.add('unknown');
+    els.road.textContent = '';
+    setStatus('Stopped. Tap Start to begin again.');
+  }
+
+  els.start.addEventListener('click', () => watchId == null ? start() : stop());
+  els.units.addEventListener('click', () => { prefs.mph = !prefs.mph; savePrefs(); render(); });
+  els.tol.addEventListener('click', () => {
+    const steps = [0, 3, 5, 10];
+    prefs.tol = steps[(steps.indexOf(prefs.tol) + 1) % steps.length];
+    savePrefs(); render();
+  });
+  els.chime.addEventListener('click', () => { prefs.chime = !prefs.chime; savePrefs(); render(); if (prefs.chime && audioCtx) chime(); });
+
+  render();
+})();
+</script>
+</body>
+</html>
